@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=56", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-gateway"
+version = "0.1.0"
+description = "Jarvis API gateway for auth, tenancy, sessions, and controls"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
