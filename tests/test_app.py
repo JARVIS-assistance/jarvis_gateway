@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+os.environ.setdefault("JARVIS_AUTH_SECRET", "test-secret")
+
 from fastapi.testclient import TestClient
 
 from jarvis_gateway.app import create_app
@@ -9,6 +11,7 @@ from jarvis_gateway.app import create_app
 def make_client(tmp_path: Path, rate_limit: int = 50) -> TestClient:
     os.environ["JARVIS_GATEWAY_RATE_LIMIT"] = str(rate_limit)
     os.environ["JARVIS_GATEWAY_RATE_WINDOW"] = "60"
+    os.environ.setdefault("JARVIS_AUTH_SECRET", "test-secret")
     app = create_app(str(tmp_path / "gateway.db"))
     return TestClient(app)
 
@@ -129,6 +132,21 @@ def test_rate_limit_block(tmp_path: Path) -> None:
     assert second.status_code == 200
     assert third.status_code == 429
     assert third.json()["error_code"] == "RATE_LIMIT_EXCEEDED"
+
+
+def test_logout_revocation_survives_restart(tmp_path: Path) -> None:
+    db_path = tmp_path / "gateway.db"
+    app = create_app(str(db_path))
+    with TestClient(app) as client:
+        token = login_admin(client)
+        logout = client.post("/auth/logout", headers=auth_headers(token))
+        assert logout.status_code == 200
+
+    # simulate a process restart: fresh app + in-memory TokenStore, same db file
+    restarted = create_app(str(db_path))
+    with TestClient(restarted) as client:
+        validated = client.get("/auth/validate", headers=auth_headers(token))
+    assert validated.status_code == 401
 
 
 def test_audit_logs(tmp_path: Path) -> None:

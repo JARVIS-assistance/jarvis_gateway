@@ -3,11 +3,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
+import os
 import secrets
 import sys
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -145,6 +149,14 @@ def _ensure_gateway_tables(db: DBClient) -> None:
             )
             """
         )
+        db.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gateway_revoked_tokens (
+                token text PRIMARY KEY,
+                expires_at double precision NOT NULL
+            )
+            """
+        )
     else:
         db.conn.executescript(
             """
@@ -194,9 +206,51 @@ def _ensure_gateway_tables(db: DBClient) -> None:
                 FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY(tenant_id) REFERENCES gateway_tenants(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS gateway_revoked_tokens (
+                token TEXT PRIMARY KEY,
+                expires_at REAL NOT NULL
+            );
             """
         )
     db.conn.commit()
+
+
+# ── revoked tokens (survive gateway restarts until natural TTL expiry) ────
+
+
+def record_revoked_token(db: DBClient, token: str, expires_at: float) -> None:
+    placeholder = _placeholder(db)
+    if db.backend == "postgres":
+        db.conn.execute(
+            f"""
+            INSERT INTO gateway_revoked_tokens (token, expires_at)
+            VALUES ({placeholder}, {placeholder})
+            ON CONFLICT (token) DO NOTHING
+            """,
+            (token, expires_at),
+        )
+    else:
+        db.conn.execute(
+            f"""
+            INSERT OR IGNORE INTO gateway_revoked_tokens (token, expires_at)
+            VALUES ({placeholder}, {placeholder})
+            """,
+            (token, expires_at),
+        )
+    db.conn.commit()
+
+
+def list_active_revoked_tokens(db: DBClient, *, now: float) -> list[str]:
+    """Revoked tokens still within their TTL; also prunes expired rows."""
+    placeholder = _placeholder(db)
+    db.conn.execute(
+        f"DELETE FROM gateway_revoked_tokens WHERE expires_at < {placeholder}",
+        (now,),
+    )
+    db.conn.commit()
+    cursor = db.conn.execute("SELECT token FROM gateway_revoked_tokens")
+    return [row[0] for row in cursor.fetchall()]
 
 
 def _ensure_default_tenant(db: DBClient) -> None:
@@ -273,18 +327,34 @@ def init_db(db: DBClient) -> None:
 
 
 def seed_admin(db: DBClient) -> None:
+    if not _env_flag("JARVIS_GATEWAY_SEED_ADMIN", default=True):
+        return
+    password = os.getenv("JARVIS_GATEWAY_ADMIN_PASSWORD", "").strip() or "admin123"
+    if password == "admin123":
+        logger.warning(
+            "jarvis_gateway: seeding admin@jarvis.local with the default password "
+            "'admin123'. Set JARVIS_GATEWAY_ADMIN_PASSWORD (and disable seeding in "
+            "shared/prod deployments with JARVIS_GATEWAY_SEED_ADMIN=false)."
+        )
     _ensure_default_tenant(db)
     user = find_user_by_email(db, DEFAULT_ADMIN_EMAIL)
     if user is None:
         created = create_user(db, email=DEFAULT_ADMIN_EMAIL, name="Admin")
         user_id = created["id"]
-        _store_credentials(db, user_id, "admin123")
+        _store_credentials(db, user_id, password)
     else:
         user_id = user["id"]
         # credentials가 없으면 추가
         if _get_credentials(db, user_id) is None:
-            _store_credentials(db, user_id, "admin123")
+            _store_credentials(db, user_id, password)
     _ensure_user_tenant(db, user_id, DEFAULT_TENANT_ID)
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
 
 
 # ── tenant ──────────────────────────────────────────────────

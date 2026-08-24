@@ -1,3 +1,4 @@
+import time
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -24,7 +25,9 @@ from .db import (
     get_tenant,
     get_user,
     init_db,
+    list_active_revoked_tokens,
     list_audit_logs,
+    record_revoked_token,
     register_user,
     seed_admin,
     terminate_session,
@@ -77,6 +80,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
         app.state.db = connect(db_path)
         init_db(app.state.db)
         seed_admin(app.state.db)
+        app.state.token_store.load_revoked(
+            list_active_revoked_tokens(app.state.db, now=time.time())
+        )
 
     @app.on_event("shutdown")
     def shutdown() -> None:
@@ -150,6 +156,11 @@ def create_app(db_path: str | None = None) -> FastAPI:
     @app.post("/auth/logout")
     def logout(request: Request, principal: Principal = Depends(principal_from_header)):
         app.state.token_store.revoke(principal.token)
+        record_revoked_token(
+            app.state.db,
+            principal.token,
+            expires_at=time.time() + app.state.token_store.ttl_seconds,
+        )
         add_audit_log(
             app.state.db,
             request.state.request_id,

@@ -21,7 +21,14 @@ class Principal:
 class TokenStore:
     def __init__(self, ttl_seconds: int = 3600) -> None:
         self.ttl_seconds = ttl_seconds
-        self.secret = os.getenv("JARVIS_AUTH_SECRET", "").encode("utf-8")
+        secret = os.getenv("JARVIS_AUTH_SECRET", "")
+        if not secret.strip():
+            raise RuntimeError(
+                "JARVIS_AUTH_SECRET must be set — without it, login silently "
+                "issues tokens that every subsequent authenticated request "
+                "will reject."
+            )
+        self.secret = secret.encode("utf-8")
         self._revoked_tokens: set[str] = set()
 
     def issue(self, user_id: str, tenant_id: str) -> str:
@@ -41,8 +48,12 @@ class TokenStore:
     def revoke(self, token: str) -> None:
         self._revoked_tokens.add(token)
 
+    def load_revoked(self, tokens: list[str]) -> None:
+        """Seed the in-memory revocation set, e.g. from persisted storage on startup."""
+        self._revoked_tokens.update(tokens)
+
     def get(self, token: str) -> dict[str, Any] | None:
-        if not self.secret or token in self._revoked_tokens:
+        if token in self._revoked_tokens:
             return None
         try:
             payload_b64, signature_b64 = token.split(".", 1)
