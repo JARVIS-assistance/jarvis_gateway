@@ -24,6 +24,7 @@ htmlcov/
 *.db
 *.sqlite3
 *.log
+.env
 
 # OS / editor
 .DS_Store
